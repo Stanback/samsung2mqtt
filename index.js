@@ -1,60 +1,102 @@
 const mqtt = require('mqtt');
-const samsung = require('./samsung');
+const SamsungRemote = require('samsung-remote');
 const config = require('./config');
+
+let remotes;
+let activeRemote;
+let client;
 
 const makeTopic = (...parts) => [config.mqtt.topic, ...parts].join('/');
 
+const publishStatus = (dev, status) => {
+  if (dev === activeRemote) {
+    client.publish(makeTopic('tv', 'ACTIVE', 'status'), status);
+  }
+  client.publish(makeTopic('tv', dev, 'status'), status);
+};
+
 const connect = () => {
   console.log('Connected to MQTT server');
+
   client.publish(makeTopic('connected'), 'true');
-  client.subscribe(makeTopic('+', 'auth'));
-  client.subscribe(makeTopic('+', 'push'));
-  /*
-  // Request device authorization on startup
+
   config.tvs.forEach(tv => {
-    client.publish(makeTopic(tv.id, 'auth'));
+    const dev = tv.id;
+    remotes[dev] = new SamsungRemote({
+      ip: tv.ip
+    });
+
+    if (dev === activeRemote) {
+      client.publish(makeTopic('active'), dev);
+    }
+
+    remotes[dev].isAlive(err => {
+      const isAlive = !err ? 'true' : 'false';
+      publishStatus(dev, isAlive);
+    });
   });
-  */
+
+  client.subscribe(makeTopic('active', 'set'));
+  client.subscribe(makeTopic('tv', '+', 'status', 'set'));
+  client.subscribe(makeTopic('tv', '+', 'send'));
 };
 
 const handleMessage = (topic, message) => {
-  const [base, deviceId, command] = topic.split('/');
-  if (base !== config.mqtt.topic) return;
+  const [base, subj, device, command, ...rest] = topic.split('/');
+  const payload = message && message.toString();
 
-  const tv = config.tvs.find(tv => tv.id === deviceId);
-  if (!tv) {
-    console.log('Error: Specified device not found in config: ' + deviceId);
-    return;
-  }
-
-  switch (command) {
-    case 'auth':
-      samsung.auth(config.remote, tv);
+  switch (subj) {
+    case 'active':
+      switch (device) {
+        case 'set':
+          activeRemote = payload;
+          console.log('Setting active remote to ' + activeRemote);
+          client.publish(makeTopic('device'), activeRemote);
+          break;
+        default:
+      }
       break;
-    case 'push':
-      const key = message.toString();
-      const keys = tv.keys[key];
-      if (!keys) {
-        console.log('Error: Invalid key specified: ' + key);
+    case 'tv':
+      const dev = device === 'ACTIVE' ? activeRemote : device;
+      const tv = config.tvs.find(tv => tv.id === dev);
+
+      if (!tv) {
+        console.log('Error: Specified TV, ' + dev + ' not found in config');
         return;
       }
-      const throttledPress = (idx, n) => {
-        const [k, delay = 200, repeats = 0] = keys[idx];
-        samsung.push(k, tv);
-        if (repeats > n) {
-          setTimeout(throttledPress, delay, idx, n+1);
-        } else if (idx < keys.length - 1) {
-          setTimeout(throttledPress, delay, idx+1, 0);
-        }
-      };
-      throttledPress(0, 0);
+
+      switch (command) {
+        case 'send':
+          const key = tv.keys[payload];
+          if (!key) {
+            console.log('Error: Invalid key, ' + payload + ', for TV ' + dev);
+            return;
+          }
+          console.log('Sending key ' + key + ' to TV ' + dev);
+          remotes[dev].send(key, err => {
+            if (err) {
+              console.log('Warning: TV ' + dev + ' is offline');
+            }
+            publishStatus(dev, err ? 'false' : 'true');
+          });
+          break;
+        case 'status':
+          if (rest.length > 0 && rest[0] === 'set') {
+            console.log('Setting status for TV ' + dev + ' to ' + payload);
+            remotes[tv.id].send(payload === 'true' ? 'KEY_POWERON' : 'KEY_POWEROFF', err => {
+              const isAlive = !err && payload === 'true' ? 'true' : 'false';
+              publishStatus(dev, isAlive);
+            });
+          }
+          break;
+        default:
+      }
       break;
     default:
-      console.log('Error: Unknown command specified: ' + command);
   }
 };
 
-const cleanup = () => {
+const tearDown = () => {
   console.log('Shutting down...');
   client.publish(makeTopic('connected'), 'false')
   client.end(null, null, () => {
@@ -62,10 +104,23 @@ const cleanup = () => {
   });
 };
 
-console.log('Connecting to MQTT server at ' + config.mqtt.host);
-const client = mqtt.connect(config.mqtt.host);
-client.on('connect', connect);
-client.on('message', handleMessage);
-process.on('SIGINT', cleanup);
-process.on('SIGTERM', cleanup);
+const startup = () => {
+  if (!config.tvs || config.tvs.length === 0) {
+    console.log('Error: Please define at least one TV');
+  }
+
+  remotes = {};
+  activeRemote = config.tvs[0].id;
+
+  console.log('Connecting to MQTT server at ' + config.mqtt.host);
+
+  client = mqtt.connect(config.mqtt.host);
+  client.on('connect', connect);
+  client.on('message', handleMessage);
+
+  process.on('SIGINT', tearDown);
+  process.on('SIGTERM', tearDown);
+}
+
+startup();
 
