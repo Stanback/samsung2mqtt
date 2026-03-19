@@ -118,8 +118,10 @@ const startup = () => {
   client.on('connect', connect);
   client.on('message', handleMessage);
 
-  process.on('SIGINT', tearDown);
-  process.on('SIGTERM', tearDown);
+  if (process.env.SAMSUNG2MQTT_DAEMON !== '1') {
+    process.on('SIGINT', tearDown);
+    process.on('SIGTERM', tearDown);
+  }
 }
 
 startup();
