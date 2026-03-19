@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "description": "Samsung2MQTT bridge (for Samsung TV's built prior to 2016)",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "mqtt": "^3.0.0",
     "samsung-remote": "^1.5.0"
