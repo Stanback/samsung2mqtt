@@ -75,7 +75,7 @@ const handleMessage = (topic, message) => {
           console.log('Sending key ' + key + ' to TV ' + dev);
           remotes[dev].send(key, err => {
             if (err) {
-              console.log('Warning: TV ' + dev + ' is offline');
+              console.log('Warning: TV ' + dev + ' is offline (' + err + ')');
             }
             publishStatus(dev, err ? 'false' : 'true');
           });
